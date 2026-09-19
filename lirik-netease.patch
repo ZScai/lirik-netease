@@ -1,0 +1,1804 @@
+diff --git a/BUILD-NETEASE.md b/BUILD-NETEASE.md
+new file mode 100644
+index 0000000..9c68e67
+--- /dev/null
++++ b/BUILD-NETEASE.md
+@@ -0,0 +1,128 @@
++# BUILD-NETEASE — 网易云 / System Now Playing 构建说明
++
++English summary below · 下方为详细中文步骤
++
++---
++
++## 设计选择 / Design choice
++
++**默认推荐 Homebrew `media-control`（brew-based）**，可选捆绑 `mediaremote-adapter`。
++
++| 方案 | 说明 |
++|------|------|
++| **brew `media-control`（推荐）** | 在 Mac 上 `brew install media-control`。Widget 运行时调用 CLI。无需把 framework 打进 `.pock`，避开签名/沙盒与 **仅 x86_64** 预编译库在 Apple Silicon 上不可用的问题。 |
++| **捆绑 adapter（可选）** | 在本机用 CMake 编出 **arm64/universal** `MediaRemoteAdapter.framework`，放入 `vendor/`，由 Xcode 脚本拷进 `.pock`。与 TouchBarLyrics 相同：`/usr/bin/perl` + `mediaremote-adapter.pl`。 |
++
++本仓库已 vendored：`lirik/Resources/mediaremote-adapter.pl`。  
++**未**附带预编译 framework（上游 TouchBarLyrics 自带的是 x86_64，不适合 Apple Silicon）。
++
++Lyrics 仍走 **LRCLIB**；只要拿到 title / artist / elapsed / duration，原有同步逻辑不变。
++
++---
++
++## 前置条件 Prerequisites
++
++在 **macOS 15.x Apple Silicon** 上：
++
++1. **Pock** — https://pock.app  
++2. **Xcode（完整版，不只 Command Line Tools）** — PockKit / CocoaPods 编 `.pock` 需要完整 SDK。你已有 Swift 6.2.4 / CLT 时，若 `pod install` 或 `xcodebuild` 报找不到 macOS SDK / PockKit，请安装完整 Xcode 并执行：
++   ```bash
++   sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
++   ```
++3. **CocoaPods** — `sudo gem install cocoapods` 或 `brew install cocoapods`  
++4. **media-control（推荐运行时依赖）**：
++   ```bash
++   brew install media-control
++   # 若 formula 不在 core：brew tap ungive/media-control && brew install media-control
++   ```
++5. **网易云音乐** Mac 版（bundle id `com.netease.163music`）
++
++可选（自包含 bundle）：CMake — `brew install cmake`
++
++---
++
++## 构建步骤 Build
++
++```bash
++# 1. 进入本补丁树（或你 clone 后的路径）
++cd /path/to/lirik-netease
++
++# 2.（可选）构建并安装 arm64 MediaRemoteAdapter.framework
++# ./scripts/build-mediaremote-adapter.sh
++
++# 3. CocoaPods
++pod install
++
++# 4. Release 构建（关闭用户脚本沙盒，与上游 README 一致）
++xcodebuild -workspace lirik.xcworkspace -scheme lirik -configuration Release build \
++  ENABLE_USER_SCRIPT_SANDBOXING=NO
++
++# 产物通常在 DerivedData，或上游约定的 dist/。查找：
++find ~/Library/Developer/Xcode/DerivedData -name 'lirik.pock' 2>/dev/null | head
++# 若项目有拷贝到 dist 的脚本/习惯：ls dist/lirik.pock
++```
++
++打开 `lirik.xcworkspace`（**不是** `.xcodeproj`）也可在 Xcode 里 ⌘B。
++
++开发团队：`project.pbxproj` 里有上游 `DEVELOPMENT_TEAM`。若签名失败，在 Xcode → Signing & Capabilities 改成你自己的 Team。
++
++---
++
++## 安装到 Pock Install
++
++```bash
++# 去掉隔离属性（否则会报 damaged / invalid-bundle）
++xattr -cr /path/to/lirik.pock
++
++# 安装
++cp -R /path/to/lirik.pock ~/Library/Application\ Support/Pock/Widgets/
++# 或双击 lirik.pock
++```
++
++1. 菜单栏 Pock → **Manage widgets...** → 启用 **Lirik**  
++2. **Customize Pock...** → 把 Lirik 拖到 Touch Bar  
++
++---
++
++## 测试 网易云 Test with NetEase
++
++1. 确认 Control Center「正在播放」能显示网易云当前曲目。  
++2. 终端验证：
++   ```bash
++   media-control get --no-artwork
++   # 应看到 title / artist / bundleIdentifier ≈ com.netease.163music
++   ```
++3. Pock → Lirik 偏好 → **Music Player Source** 选：
++   - **System Now Playing (网易云/any)**，或  
++   - **Auto-detect**
++4. 播放一首在 [LRCLIB](https://lrclib.net) 上有歌词的歌 → Touch Bar 应出现同步歌词。  
++5. **System** 路径**不需要**给网易云开 Automation。Spotify / Apple Music 的 AppleScript 路径仍可能需要 Automation。
++
++查看日志：
++```bash
++log stream --predicate 'eventMessage CONTAINS "MediaControlBackend" OR eventMessage CONTAINS "NowPlayingWatcher"' --level debug
++```
++
++---
++
++## 故障排查 Troubleshooting
++
++| 现象 | 处理 |
++|------|------|
++| 无歌词、日志说 MediaControl unavailable | `brew install media-control`；确认 `/opt/homebrew/bin/media-control` 存在；重启 Pock |
++| `media-control get` 为空 | 网易云未上报 Now Playing；换曲/开关一次播放；确认控制中心有正在播放 |
++| 只有 Spotify/Music 有词 | 偏好改成 System / Auto；不要用 Spotify Only |
++| 签名 / PockKit 失败 | 安装完整 Xcode；`xcode-select` 指向 Xcode；换 DEVELOPMENT_TEAM |
++| 捆绑了 framework 但仍失败 | 用 `lipo -info` 确认是 **arm64** 或 universal，不要用 x86_64-only |
++
++---
++
++## English (short)
++
++1. Install **Xcode**, **CocoaPods**, **Pock**, and `brew install media-control`.  
++2. `pod install` then `xcodebuild -workspace lirik.xcworkspace -scheme lirik -configuration Release build ENABLE_USER_SCRIPT_SANDBOXING=NO`.  
++3. Copy `lirik.pock` into `~/Library/Application Support/Pock/Widgets/`, `xattr -cr` it, enable in Pock.  
++4. Set Lirik player source to **System Now Playing** or **Auto**. Play 网易云; lyrics still come from LRCLIB.  
++5. Optional: `./scripts/build-mediaremote-adapter.sh` to bundle an arm64 framework instead of relying on brew.  
++6. **No binary was built on the Linux patch box** — you must build on your Mac.
++
+diff --git a/CHANGES-NETEASE.md b/CHANGES-NETEASE.md
+new file mode 100644
+index 0000000..d5fd15d
+--- /dev/null
++++ b/CHANGES-NETEASE.md
+@@ -0,0 +1,51 @@
++# CHANGES-NETEASE — files touched for NetEase / System Now Playing
++
++Upstream base: RidhaAF/lirik `main` @ `1d46abe` (v1.3.1).
++
++## Design
++
++- **Primary runtime:** Homebrew [`media-control`](https://github.com/ungive/media-control) (`stream` / `get`).
++- **Optional bundle:** `mediaremote-adapter.pl` + locally built arm64 `MediaRemoteAdapter.framework` (TouchBarLyrics-style `/usr/bin/perl` launch).
++- **Not used:** NetEase AppleScript (none usable).
++- Lyrics path unchanged: LRCLIB + existing `LRCSyncEngine`.
++
++## New files
++
++| Path | Purpose |
++|------|---------|
++| `lirik/Sources/NowPlaying/MediaControlBackend.swift` | Stream/parse system Now Playing JSON → `NowPlayingTrack` |
++| `lirik/Resources/mediaremote-adapter.pl` | Vendored adapter CLI script |
++| `lirik/Resources/README-ADAPTER.txt` | Where to place built framework |
++| `vendor/mediaremote-adapter/bin/mediaremote-adapter.pl` | Same script (vendor copy) |
++| `vendor/mediaremote-adapter/LICENSE` | BSD 3-Clause |
++| `scripts/build-mediaremote-adapter.sh` | macOS-only framework build helper |
++| `BUILD-NETEASE.md` | EN/中文 build & test guide |
++| `CHANGES-NETEASE.md` | This file |
++| `NOTICE-NETEASE.md` | Third-party notices |
++
++## Modified files
++
++| Path | Change |
++|------|--------|
++| `lirik/Sources/NowPlaying/NowPlayingTrack.swift` | Sources: `netease`, `system` |
++| `lirik/Sources/NowPlaying/NowPlayingWatcher.swift` | Prefer MediaControl; honor player preference; restart on pref change |
++| `lirik/Sources/NowPlaying/AppleScriptBackend.swift` | Honor spotify/music preference when polling |
++| `lirik/Sources/NowPlaying/MediaRemoteBackend.swift` | Comment pointing to MediaControl on 15.4+ |
++| `lirik/Sources/Widget/LirikPreferenceViewController.swift` | Add **System Now Playing** option + notification |
++| `lirik/Info.plist` | Automation usage string clarifies System path |
++| `lirik.xcodeproj/project.pbxproj` | Copy-framework script phase |
++| `README.md` | NetEase / System Now Playing section |
++
++## Unchanged (intentionally)
++
++- `LRCParser`, `LRCLIBClient`, `LyricsCache`, `LRCSyncEngine`, widget rendering — once metadata exists, sync works as before.
++- No invented NetEase AppleScript.
++
++## Remaining risks
++
++1. Full **Xcode** (not only CLT) needed for PockKit / `.pock` build.  
++2. NetEase must publish Now Playing to macOS; otherwise no detection.  
++3. Prebuilt frameworks that are **x86_64-only** will not load under arm64 `/usr/bin/perl`.  
++4. Pock may not inherit interactive shell `PATH`; code checks `/opt/homebrew/bin` and `/usr/local/bin` explicitly.  
++5. No `.pock` binary was produced on the Linux workspace.
++
+diff --git a/NOTICE-NETEASE.md b/NOTICE-NETEASE.md
+new file mode 100644
+index 0000000..0dfbe1d
+--- /dev/null
++++ b/NOTICE-NETEASE.md
+@@ -0,0 +1,13 @@
++# Third-party notices (NetEase / System Now Playing patch)
++
++## mediaremote-adapter
++
++- Upstream: https://github.com/ungive/mediaremote-adapter
++- License: BSD 3-Clause (see `vendor/mediaremote-adapter/LICENSE`)
++- Bundled: `lirik/Resources/mediaremote-adapter.pl` and (optionally) `vendor/MediaRemoteAdapter.framework` built on macOS
++
++## media-control
++
++- Upstream: https://github.com/ungive/media-control
++- License: BSD 3-Clause
++- Used as an optional Homebrew runtime dependency when the framework is not bundled
+diff --git a/README.md b/README.md
+index 3116737..77924fd 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # 🎵 Lirik — Touch Bar Synced Lyrics for macOS (v1.3.1)
+ 
+-**Lirik** is a macOS Touch Bar widget that displays real-time synchronized lyrics for whatever song is playing in **Spotify** or **Apple Music**. Built as a native plugin for **Pock**.
++**Lirik** is a macOS Touch Bar widget that displays real-time synchronized lyrics for whatever song is playing — **Spotify**, **Apple Music**, or (with this NetEase patch) **网易云音乐 / any macOS Now Playing source**. Built as a native plugin for **Pock**.
+ 
+ ![Lirik Touch Bar Demo](assets/demo.jpg)
+ 
+@@ -20,7 +20,7 @@
+   - **Lyric Text Size**: Small, Medium, or Large.
+   - **8 Highlight Color Themes**: White, Gold, Cyan, Green, Purple, Pink, Orange, and Red.
+   - **Marquee Scrolling Toggle**: Enable/disable smooth horizontal marquee scrolling for long lyric lines.
+-  - **Music Player Source**: Auto-detect, Spotify Only, or Apple Music Only.
++  - **Music Player Source**: Auto-detect, **System Now Playing** (网易云 / any Now Playing app), Spotify Only, or Apple Music Only.
+   - **Pause Indicator**: Toggle `⏸` icon display when paused.
+   - **Album Artwork**: Toggle album artwork thumbnail and choose size (Small, Medium, Large).
+   - **Song Title & Artist**: Toggle song title & artist display when track changes.
+@@ -90,6 +90,32 @@ When playing music for the first time:
+ 
+ ---
+ 
++## 🎵 NetEase Cloud Music (网易云) / System Now Playing
++
++Official 网易云 has **no usable AppleScript dictionary**, so this fork reads **macOS System Now Playing** via [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) / [media-control](https://github.com/ungive/media-control) (same approach as TouchBarLyrics), then keeps using **LRCLIB** for lyrics.
++
++### Runtime dependency (recommended)
++
++On your Mac (Apple Silicon):
++
++```bash
++brew install media-control
++# or: brew tap ungive/media-control && brew install media-control
++media-control get   # should show title/artist while 网易云 is playing
++```
++
++Then in Pock → Manage widgets → **Lirik** → **Music Player Source**:
++- **Auto-detect** — System Now Playing first (covers 网易云), AppleScript fallback for Spotify/Music
++- **System Now Playing (网易云/any)** — force system path only (no Automation needed for NetEase)
++
++> **Important:** 网易云 must publish Now Playing to macOS (Control Center shows the track). If Control Center shows nothing, Lirik cannot see it either.
++
++Optional self-contained build: place an **arm64/universal** `MediaRemoteAdapter.framework` under `vendor/` (see `BUILD-NETEASE.md`). Do **not** use an x86_64-only framework on Apple Silicon.
++
++Full build/install/test steps: **[BUILD-NETEASE.md](BUILD-NETEASE.md)** · change list: **[CHANGES-NETEASE.md](CHANGES-NETEASE.md)**
++
++---
++
+ ## ⚙️ Customizing Preferences
+ 
+ You can customize Lirik's layout, colors, alignment, and font size directly inside Pock:
+@@ -102,7 +128,7 @@ You can customize Lirik's layout, colors, alignment, and font size directly insi
+    - **Text Size**: Choose *Small*, *Medium*, or *Large*.
+    - **Highlight Color**: Choose from 8 themes (*White, Gold, Cyan, Green, Purple, Pink, Orange, Red*).
+    - **Marquee Scrolling**: Toggle smooth scrolling for long lines.
+-   - **Player Source**: Select *Auto-detect*, *Spotify*, or *Apple Music*.
++   - **Player Source**: Select *Auto-detect*, *System Now Playing*, *Spotify*, or *Apple Music*.
+    - **Pause Indicator**: Toggle `⏸` icon when paused.
+    - **Album Artwork**: Toggle album artwork thumbnail and choose size.
+    - **Song Title & Artist**: Toggle song title & artist display on track change.
+diff --git a/lirik.xcodeproj/project.pbxproj b/lirik.xcodeproj/project.pbxproj
+index 95cf12a..bc2490c 100644
+--- a/lirik.xcodeproj/project.pbxproj
++++ b/lirik.xcodeproj/project.pbxproj
+@@ -96,6 +96,7 @@
+ 				DE8B9BDE302327A200535EE1 /* Sources */,
+ 				DE8B9BDF302327A200535EE1 /* Frameworks */,
+ 				DE8B9BE0302327A200535EE1 /* Resources */,
++				A1B2C3D4E5F607182930A1B2 /* [NetEase] Copy mediaremote-adapter framework */,
+ 				DE8B9BE1302327A200535EE1 /* [PK] Install widget */,
+ 			);
+ 			buildRules = (
+@@ -195,6 +196,29 @@
+ 			shellPath = /bin/sh;
+ 			shellScript = "# Install widget.\necho \"[${PRODUCT_NAME}.pock] Starting installation\"\nFILEPATH=$TARGET_BUILD_DIR/$PRODUCT_NAME.pock \nopen \"$FILEPATH\"";
+ 		};
++		A1B2C3D4E5F607182930A1B2 /* [NetEase] Copy mediaremote-adapter framework */ = {
++			isa = PBXShellScriptBuildPhase;
++			buildActionMask = 2147483647;
++			files = (
++			);
++			inputFileListPaths = (
++			);
++			inputPaths = (
++				"${SRCROOT}/vendor/MediaRemoteAdapter.framework",
++				"${SRCROOT}/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl",
++			);
++			name = "[NetEase] Copy mediaremote-adapter framework";
++			outputFileListPaths = (
++			);
++			outputPaths = (
++				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/MediaRemoteAdapter.framework",
++				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/mediaremote-adapter.pl",
++			);
++			runOnlyForDeploymentPostprocessing = 0;
++			shellPath = /bin/sh;
++			shellScript = "# Optional: copy arm64/universal MediaRemoteAdapter.framework into the .pock bundle.\n# If missing, runtime falls back to Homebrew media-control.\nset -e\nRES=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$RES\"\n# Prefer Resources copy already synced from lirik/Resources; ensure pl is present\nif [ -f \"${SRCROOT}/lirik/Resources/mediaremote-adapter.pl\" ]; then\n  cp -f \"${SRCROOT}/lirik/Resources/mediaremote-adapter.pl\" \"$RES/mediaremote-adapter.pl\"\nelif [ -f \"${SRCROOT}/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl\" ]; then\n  cp -f \"${SRCROOT}/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl\" \"$RES/mediaremote-adapter.pl\"\nfi\nif [ -d \"${SRCROOT}/vendor/MediaRemoteAdapter.framework\" ]; then\n  rm -rf \"$RES/MediaRemoteAdapter.framework\"\n  cp -R \"${SRCROOT}/vendor/MediaRemoteAdapter.framework\" \"$RES/\"\n  echo \"[NetEase] Bundled MediaRemoteAdapter.framework\"\nelse\n  echo \"[NetEase] No vendor/MediaRemoteAdapter.framework — runtime will use brew media-control if installed\"\nfi\n";
++			showEnvVarsInLog = 0;
++		};
+ /* End PBXShellScriptBuildPhase section */
+ 
+ /* Begin PBXSourcesBuildPhase section */
+diff --git a/lirik/Info.plist b/lirik/Info.plist
+index 7cc5162..1292d9c 100644
+--- a/lirik/Info.plist
++++ b/lirik/Info.plist
+@@ -19,6 +19,6 @@
+ 	<key>PKWidgetAuthor</key>
+ 	<string>Ridha Ahmad Firdaus</string>
+ 	<key>NSAppleEventsUsageDescription</key>
+-	<string>Lirik requires access to Spotify and Apple Music to display real-time lyrics on your Touch Bar.</string>
++	<string>Lirik may use Automation to read Spotify or Apple Music when those player modes are selected. System Now Playing / NetEase uses mediaremote-adapter or media-control instead.</string>
+ </dict>
+ </plist>
+diff --git a/lirik/Resources/README-ADAPTER.txt b/lirik/Resources/README-ADAPTER.txt
+new file mode 100644
+index 0000000..1d7f873
+--- /dev/null
++++ b/lirik/Resources/README-ADAPTER.txt
+@@ -0,0 +1,7 @@
++Place MediaRemoteAdapter.framework here after building on macOS (arm64/universal).
++
++  git clone https://github.com/ungive/mediaremote-adapter.git /tmp/mra
++  cd /tmp/mra && mkdir build && cd build && cmake .. && cmake --build .
++  cp -R MediaRemoteAdapter.framework <this-Resources-folder>/
++
++If the framework is missing at runtime, Lirik falls back to Homebrew `media-control`.
+diff --git a/lirik/Resources/mediaremote-adapter.pl b/lirik/Resources/mediaremote-adapter.pl
+new file mode 100755
+index 0000000..c586bce
+--- /dev/null
++++ b/lirik/Resources/mediaremote-adapter.pl
+@@ -0,0 +1,290 @@
++#!/usr/bin/perl
++# Copyright (c) 2025 Jonas van den Berg
++# This file is licensed under the BSD 3-Clause License.
++
++# For usage information read below or run the script without arguments.
++
++use strict;
++use warnings;
++use DynaLoader;
++use File::Spec;
++use File::Basename;
++
++sub print_help() {
++  print <<'HELP';
++Usage:
++  mediaremote-adapter.pl FRAMEWORK_PATH [TEST_CLIENT_PATH]
++                         [FUNCTION [PARAMS|OPTIONS...]]
++
++FRAMEWORK_PATH:
++  Absolute path to the MediaRemoteAdapter.framework directory
++
++TEST_CLIENT_PATH: (optional)
++  Absolute path to the MediaRemoteAdapterTestClient executable. Only for "test"
++
++FUNCTION:
++  stream   Streams now playing information (as diff by default)
++  get      Prints now playing information once with all available metadata
++  send     Sends a command to the now playing application
++  seek     Seeks to a specific timeline position
++  shuffle  Sets the shuffle mode
++  repeat   Sets the repeat mode
++  speed    Sets the playback speed
++  test     Tests if the adapter is entitled to use the MediaRemote framework.
++           An exit code other than 0 indicates the adapter is non-functional
++
++PARAMS:
++  send(command)
++    command: The MRCommand ID as a number (e.g. kMRPlay = 0)
++  seek(position)
++    position: The timeline position in microseconds
++  shuffle(mode)
++    mode: The shuffle mode
++  repeat(mode)
++    mode: The repeat mode
++  speed(speed)
++    speed: The playback speed
++
++OPTIONS:
++  get
++    --now: Adds an "elapsedTimeNow" key with an estimation of the current
++      elapsed playback time. This estimation may be off by up to a second.
++      To determine a more accurate time without polling "get" continuously,
++      calculate it using the "elapsedTime" and "timestamp" keys. "elapsedTime"
++      contains the elapsed time at the time that is stored in "timestamp".
++  stream
++    --no-diff: Disable diffing and always dump all metadata
++    --debounce=N: Delay in milliseconds to prevent spam (0 by default)
++  get, stream
++    --micros: Replaces the following time keys with microsecond equivalents:
++      "duration" -> "durationMicros"
++      "elapsedTime" -> "elapsedTimeMicros"
++      "elapsedTimeNow" -> "elapsedTimeNowMicros"
++      "timestamp" -> "timestampEpochMicros" (converted to epoch time)
++    --no-artwork: Omits "artworkData" and "artworkMimeType" from the payload.
++      Useful for consumers that do not render artwork, since this avoids
++      emitting several hundred kilobytes of base64 data per update.
++    --allow-missing-title: By default, media with a null or absent title is
++      ignored. This flag leads to media with a null or absent title being
++      emitted. The consumer needs to explicitly handle the possibility of the
++      title being null or absent.
++    --human-readable, -h: Makes values human-readable. Use only for debugging.
++      The JSON output is pretty-printed and the following keys are adapted:
++      "artworkData" -> Binary data is truncated to a shorter representation
++
++Examples (script name and framework path omitted):
++  stream --no-diff --debounce=100
++  send 2    # Toggles play/pause in the media player (kMRATogglePlayPause)
++  repeat 3  # Sets the repeat mode to "playlist" (kMRARepeatModePlaylist)
++
++HELP
++  exit 0;
++}
++
++if (!defined $ARGV[1]) {
++  print_help();
++}
++
++sub fail {
++  my ($error) = @_;
++  print STDERR "$error\n";
++  exit 1;
++}
++
++fail "Framework path not provided" unless @ARGV >= 1;
++
++my $framework_path = shift @ARGV;
++
++# Optionally accept MEDIAREMOTEADAPTER_TEST_CLIENT_PATH path as second argument
++my $maybe_helper_path = $ARGV[0] // '';
++if ($maybe_helper_path =~ m{/}){
++  my $helper_path = shift @ARGV;
++  $ENV{MEDIAREMOTEADAPTER_TEST_CLIENT_PATH} = $helper_path;
++}
++
++if (!defined $ARGV[0]) {
++  print_help();
++}
++
++my $framework_basename = File::Basename::basename($framework_path);
++fail "Provided path is not a framework: $framework_path"
++  unless $framework_basename =~ s/\.framework$//;
++
++my $framework = File::Spec->catfile($framework_path, $framework_basename);
++fail "Framework not found at $framework" unless -e $framework;
++
++my $handle = DynaLoader::dl_load_file($framework, 0)
++  or fail "Failed to load framework: $framework";
++my $function_name = shift @ARGV or fail "Missing function name";
++fail "Invalid function name: '$function_name'"
++  unless $function_name eq "stream"
++  || $function_name eq "get"
++  || $function_name eq "send"
++  || $function_name eq "seek"
++  || $function_name eq "shuffle"
++  || $function_name eq "repeat"
++  || $function_name eq "speed"
++  || $function_name eq "test";
++
++sub parse_options {
++  my ($start_index) = @_;
++  my %arg_map;
++  my $i = $start_index;
++  while ($i <= $#ARGV) {
++    my $arg = $ARGV[$i];
++    if ($arg =~ /^--([a-z:\.\\-]+)(?:=(.*))?$/) {
++      my $key = $1;
++      my $value = defined $2 ? $2 : undef;
++      $arg_map{$key} = $value;
++      splice @ARGV, $i, 1;
++    }
++    elsif ($arg =~ /^-([a-zA-Z]+)$/) {
++      my @flags = split //, $1;
++      $arg_map{$_} = undef for @flags;
++      splice @ARGV, $i, 1;
++    }
++    else {
++      $i++;
++    }
++  }
++  return \%arg_map;
++}
++
++sub env_func {
++  my $symbol_name = shift;
++  return "${symbol_name}_env";
++}
++
++sub set_env_param {
++  my ($func, $index, $name, $value) = @_;
++  $ENV{"MEDIAREMOTEADAPTER_PARAM_${func}_${index}_${name}"} = "$value";
++}
++
++sub set_env_option_unsafe {
++  my ($name, $value) = @_;
++  $name =~ s/-/_/g;
++  $ENV{"MEDIAREMOTEADAPTER_OPTION_${name}"} = defined $value ? "$value" : "";
++}
++
++sub set_env_option {
++  my ($options, $key) = @_;
++  my $value = $options->{$key};
++  if (defined $value) {
++    fail "Unexpected value for option '$key'";
++  }
++  set_env_option_unsafe($key, $value);
++}
++
++sub set_env_option_value {
++  my ($options, $key) = @_;
++  my $value = $options->{$key};
++  if (!defined $value) {
++    fail "Missing value for option '$key'";
++  }
++  set_env_option_unsafe($key, $value);
++}
++
++my $symbol_name = "adapter_$function_name";
++if ($function_name eq "send") {
++  my $id = shift @ARGV;
++  fail "Missing ID for '$function_name' command" unless defined $id;
++  set_env_param($symbol_name, 0, "command", "$id");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "stream") {
++  my $options = parse_options(0);
++  foreach my $key (keys %{$options}) {
++    if ($key eq "no-diff") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "debounce") {
++      set_env_option_value($options, $key);
++    }
++    elsif ($key eq "micros") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "no-artwork") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "allow-missing-title") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "human-readable" || $key eq "h") {
++      set_env_option($options, "human-readable");
++    }
++    elsif ($key eq "experimental-peculiar-debounce:com.tidal.desktop") {
++      set_env_option_value($options, $key);
++    }
++    else {
++      fail "Unrecognized option '$key'";
++    }
++  }
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "get") {
++  my $options = parse_options(0);
++  foreach my $key (keys %{$options}) {
++    if ($key eq "micros") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "no-artwork") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "allow-missing-title") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "human-readable" || $key eq "h") {
++      set_env_option($options, "human-readable");
++    }
++    elsif ($key eq "now") {
++      set_env_option($options, $key);
++    }
++    else {
++      fail "Unrecognized option '$key'";
++    }
++  }
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "seek") {
++  my $position = shift @ARGV;
++  fail "Missing position for '$function_name' command" unless defined $position;
++  set_env_param($symbol_name, 0, "position", "$position");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "shuffle") {
++  my $mode = shift @ARGV;
++  fail "Missing mode for '$function_name' command" unless defined $mode;
++  set_env_param($symbol_name, 0, "mode", "$mode");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "repeat") {
++  my $mode = shift @ARGV;
++  fail "Missing mode for '$function_name' command" unless defined $mode;
++  set_env_param($symbol_name, 0, "mode", "$mode");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "speed") {
++  my $speed = shift @ARGV;
++  fail "Missing speed for '$function_name' command" unless defined $speed;
++  set_env_param($symbol_name, 0, "speed", "$speed");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "test") {
++  $symbol_name = "adapter_test";
++}
++
++if (defined shift @ARGV) {
++  fail "Too many arguments";
++}
++
++my $symbol = DynaLoader::dl_find_symbol($handle, "$symbol_name")
++  or fail "Symbol '$symbol_name' not found in $framework";
++DynaLoader::dl_install_xsub("main::$function_name", $symbol);
++
++eval {
++  no strict "refs";
++  &{"main::$function_name"}();
++};
++if ($@) {
++  fail "Error executing $function_name: $@";
++}
+diff --git a/lirik/Sources/NowPlaying/AppleScriptBackend.swift b/lirik/Sources/NowPlaying/AppleScriptBackend.swift
+index e79b801..33f64ca 100644
+--- a/lirik/Sources/NowPlaying/AppleScriptBackend.swift
++++ b/lirik/Sources/NowPlaying/AppleScriptBackend.swift
+@@ -111,15 +111,23 @@ final class AppleScriptBackend {
+ 
+     /// Queries running media apps in priority order. Returns the first
+     /// one that reports a playing track, or nil if nothing is playing.
++    /// Honors Music Player Source preference (spotify / music / auto).
+     private func queryNowPlaying() -> NowPlayingTrack? {
++        let pref = UserDefaults.standard.string(
++            forKey: LirikPreferenceViewController.keyPreferredPlayer
++        ) ?? "auto"
++
++        let allowSpotify = (pref == "auto" || pref == "spotify")
++        let allowMusic = (pref == "auto" || pref == "music")
++
+         // Spotify takes priority because it's more common for lyrics use
+-        if isAppRunning(bundleIdentifier: "com.spotify.client") {
++        if allowSpotify, isAppRunning(bundleIdentifier: "com.spotify.client") {
+             if let track = querySpotify() {
+                 return track
+             }
+         }
+ 
+-        if isAppRunning(bundleIdentifier: "com.apple.Music") {
++        if allowMusic, isAppRunning(bundleIdentifier: "com.apple.Music") {
+             if let track = queryAppleMusic() {
+                 return track
+             }
+diff --git a/lirik/Sources/NowPlaying/MediaControlBackend.swift b/lirik/Sources/NowPlaying/MediaControlBackend.swift
+new file mode 100644
+index 0000000..680de66
+--- /dev/null
++++ b/lirik/Sources/NowPlaying/MediaControlBackend.swift
+@@ -0,0 +1,439 @@
++//
++//  MediaControlBackend.swift
++//  lirik
++//
++//  System Now Playing backend via mediaremote-adapter / media-control.
++//  Works on macOS 15.4+ where direct MediaRemote.framework access is blocked.
++//  Same approach as TouchBarLyrics / Lyrimuse: run Apple-signed /usr/bin/perl
++//  (or Homebrew media-control) which is entitled to MediaRemote, streaming
++//  JSON updates to stdout.
++//
++//  Launch resolution order:
++//  1. Bundled mediaremote-adapter.pl + MediaRemoteAdapter.framework
++//  2. Homebrew `media-control` on PATH (/opt/homebrew or /usr/local)
++//
++//  Covers NetEase Cloud Music (com.netease.163music) and any other app that
++//  publishes to macOS Now Playing — no AppleScript dictionary required.
++//
++
++import Foundation
++
++/// Streams system-wide now-playing info via mediaremote-adapter or media-control.
++final class MediaControlBackend {
++
++    // MARK: - Launch mode
++
++    private enum LaunchMode {
++        /// `/usr/bin/perl` + bundled script + framework (TouchBarLyrics style).
++        case bundledPerl(scriptURL: URL, frameworkURL: URL)
++        /// Homebrew `media-control stream …` (preferred when no arm64 framework).
++        case mediaControlCLI(executableURL: URL)
++    }
++
++    // MARK: - State
++
++    private var process: Process?
++    private var buffer = Data()
++    private var raw: [String: Any] = [:]
++    private var onUpdate: ((NowPlayingTrack?) -> Void)?
++    private var stopped = false
++    private var pollTimer: Timer?
++    private var tickTimer: Timer?
++    private var polling = false
++    private var launchMode: LaunchMode?
++
++    /// True when either a bundled adapter or media-control CLI is available.
++    private(set) var isAvailable: Bool = false
++
++    // MARK: - Known NetEase / player bundle IDs
++
++    static let netEaseBundleID = "com.netease.163music"
++    static let spotifyBundleID = "com.spotify.client"
++    static let appleMusicBundleID = "com.apple.Music"
++
++    // MARK: - Init
++
++    init() {
++        launchMode = Self.resolveLaunchMode()
++        isAvailable = launchMode != nil
++        if let mode = launchMode {
++            NSLog("[MediaControlBackend] Available via \(Self.describe(mode))")
++        } else {
++            NSLog("[MediaControlBackend] Not available — install brew media-control or bundle MediaRemoteAdapter.framework")
++        }
++    }
++
++    // MARK: - Public API
++
++    /// One-shot fetch using `get --no-artwork --micros`.
++    func fetchNowPlaying(completion: @escaping (NowPlayingTrack?) -> Void) {
++        guard let mode = launchMode else {
++            completion(nil)
++            return
++        }
++
++        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
++            let data = Self.runOnce(mode: mode, arguments: ["get", "--no-artwork", "--micros"])
++            DispatchQueue.main.async {
++                guard let self else {
++                    completion(nil)
++                    return
++                }
++                if let data, let obj = try? JSONSerialization.jsonObject(with: data) {
++                    if let dict = obj as? [String: Any] {
++                        self.raw = dict.filter { !($0.value is NSNull) }
++                        completion(self.currentTrack())
++                    } else {
++                        self.raw = [:]
++                        completion(nil)
++                    }
++                } else {
++                    completion(nil)
++                }
++            }
++        }
++    }
++
++    /// Starts the stream process and calls `onUpdate` on the main thread.
++    func startStreaming(onUpdate: @escaping (NowPlayingTrack?) -> Void) {
++        self.onUpdate = onUpdate
++        stopped = false
++        launchStream()
++
++        // Periodic full `get` to correct missed seek/position updates (TouchBarLyrics pattern).
++        let poll = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
++            self?.poll()
++        }
++        RunLoop.main.add(poll, forMode: .common)
++        pollTimer = poll
++
++        // Local tick so elapsed advances between stream pushes while playing.
++        let tick = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
++            guard let self, !self.stopped else { return }
++            if let track = self.currentTrack() {
++                self.onUpdate?(track)
++            }
++        }
++        RunLoop.main.add(tick, forMode: .common)
++        tickTimer = tick
++    }
++
++    /// Stops the stream and timers.
++    func stopStreaming() {
++        stopped = true
++        pollTimer?.invalidate()
++        pollTimer = nil
++        tickTimer?.invalidate()
++        tickTimer = nil
++        process?.terminationHandler = nil
++        process?.terminate()
++        process = nil
++        onUpdate = nil
++        buffer = Data()
++        raw = [:]
++    }
++
++    // MARK: - Launch resolution
++
++    private static func resolveLaunchMode() -> LaunchMode? {
++        let bundle = Bundle(for: MediaControlBackend.self)
++        let resourceURL = bundle.resourceURL
++
++        let scriptCandidates: [URL?] = [
++            resourceURL?.appendingPathComponent("mediaremote-adapter.pl"),
++            bundle.url(forResource: "mediaremote-adapter", withExtension: "pl"),
++        ]
++        let frameworkCandidates: [URL?] = [
++            resourceURL?.appendingPathComponent("MediaRemoteAdapter.framework"),
++            bundle.url(forResource: "MediaRemoteAdapter", withExtension: "framework"),
++        ]
++
++        if let script = scriptCandidates.compactMap({ $0 }).first(where: { FileManager.default.isReadableFile(atPath: $0.path) }),
++           let framework = frameworkCandidates.compactMap({ $0 }).first(where: {
++               var isDir: ObjCBool = false
++               return FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDir) && isDir.boolValue
++           }) {
++            return .bundledPerl(scriptURL: script, frameworkURL: framework)
++        }
++
++        if let cli = findMediaControlCLI() {
++            return .mediaControlCLI(executableURL: cli)
++        }
++
++        return nil
++    }
++
++    private static func findMediaControlCLI() -> URL? {
++        let candidates = [
++            "/opt/homebrew/bin/media-control",
++            "/usr/local/bin/media-control",
++        ]
++        for path in candidates {
++            if FileManager.default.isExecutableFile(atPath: path) {
++                return URL(fileURLWithPath: path)
++            }
++        }
++
++        // Last resort: PATH lookup via /usr/bin/which (works when Pock inherits a login PATH).
++        let which = Process()
++        which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
++        which.arguments = ["media-control"]
++        let pipe = Pipe()
++        which.standardOutput = pipe
++        which.standardError = FileHandle.nullDevice
++        do {
++            try which.run()
++            which.waitUntilExit()
++            let data = pipe.fileHandleForReading.readDataToEndOfFile()
++            if let path = String(data: data, encoding: .utf8)?
++                .trimmingCharacters(in: .whitespacesAndNewlines),
++               !path.isEmpty,
++               FileManager.default.isExecutableFile(atPath: path) {
++                return URL(fileURLWithPath: path)
++            }
++        } catch {
++            // ignore
++        }
++        return nil
++    }
++
++    private static func describe(_ mode: LaunchMode) -> String {
++        switch mode {
++        case .bundledPerl:
++            return "bundled mediaremote-adapter"
++        case .mediaControlCLI(let url):
++            return "media-control at \(url.path)"
++        }
++    }
++
++    // MARK: - Process helpers
++
++    private static func makeProcess(mode: LaunchMode, subcommandAndFlags: [String]) -> Process {
++        let process = Process()
++        switch mode {
++        case let .bundledPerl(scriptURL, frameworkURL):
++            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
++            process.arguments = [scriptURL.path, frameworkURL.path] + subcommandAndFlags
++        case let .mediaControlCLI(executableURL):
++            process.executableURL = executableURL
++            process.arguments = subcommandAndFlags
++        }
++        return process
++    }
++
++    private static func runOnce(mode: LaunchMode, arguments: [String]) -> Data? {
++        let process = makeProcess(mode: mode, subcommandAndFlags: arguments)
++        let pipe = Pipe()
++        process.standardOutput = pipe
++        process.standardError = FileHandle.nullDevice
++        do {
++            try process.run()
++            process.waitUntilExit()
++            return pipe.fileHandleForReading.readDataToEndOfFile()
++        } catch {
++            NSLog("[MediaControlBackend] runOnce failed: \(error.localizedDescription)")
++            return nil
++        }
++    }
++
++    private func launchStream() {
++        guard let mode = launchMode, !stopped else { return }
++
++        let process = Self.makeProcess(
++            mode: mode,
++            subcommandAndFlags: ["stream", "--no-artwork", "--micros", "--debounce=100"]
++        )
++        let pipe = Pipe()
++        process.standardOutput = pipe
++        process.standardError = FileHandle.nullDevice
++
++        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
++            let data = handle.availableData
++            guard !data.isEmpty else { return }
++            DispatchQueue.main.async {
++                self?.consume(data)
++            }
++        }
++
++        process.terminationHandler = { [weak self] _ in
++            DispatchQueue.main.async {
++                guard let self, !self.stopped else { return }
++                NSLog("[MediaControlBackend] stream ended — restarting in 2s")
++                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
++                    self.launchStream()
++                }
++            }
++        }
++
++        do {
++            try process.run()
++            self.process = process
++            NSLog("[MediaControlBackend] stream started (pid \(process.processIdentifier)) via \(Self.describe(mode))")
++        } catch {
++            NSLog("[MediaControlBackend] failed to start stream: \(error.localizedDescription)")
++            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
++                guard let self, !self.stopped else { return }
++                self.launchStream()
++            }
++        }
++    }
++
++    private func poll() {
++        guard !polling, !stopped, let mode = launchMode else { return }
++        polling = true
++        DispatchQueue.global(qos: .utility).async { [weak self] in
++            let data = Self.runOnce(mode: mode, arguments: ["get", "--no-artwork", "--micros"])
++            DispatchQueue.main.async {
++                self?.polling = false
++                self?.applyPoll(data)
++            }
++        }
++    }
++
++    private func applyPoll(_ data: Data?) {
++        guard !stopped else { return }
++        guard let data, !data.isEmpty,
++              let obj = try? JSONSerialization.jsonObject(with: data) else {
++            return
++        }
++        if let dict = obj as? [String: Any] {
++            raw = dict.filter { !($0.value is NSNull) }
++        } else {
++            raw = [:]
++        }
++        onUpdate?(currentTrack())
++    }
++
++    // MARK: - JSON stream parsing
++
++    private func consume(_ data: Data) {
++        buffer.append(data)
++        while let nl = buffer.firstIndex(of: 0x0A) {
++            let line = buffer.subdata(in: buffer.startIndex..<nl)
++            buffer.removeSubrange(buffer.startIndex...nl)
++            handleLine(line)
++        }
++    }
++
++    private func handleLine(_ line: Data) {
++        guard !line.isEmpty,
++              let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
++              obj["type"] as? String == "data",
++              let payload = obj["payload"] as? [String: Any]
++        else { return }
++
++        let isDiff = obj["diff"] as? Bool ?? false
++        if !isDiff { raw = [:] }
++
++        // Drop stale elapsed when title changes without a new position.
++        if let newTitle = payload["title"] as? String,
++           newTitle != (raw["title"] as? String),
++           payload["elapsedTimeMicros"] == nil {
++            raw.removeValue(forKey: "elapsedTimeMicros")
++            raw.removeValue(forKey: "timestampEpochMicros")
++            raw.removeValue(forKey: "elapsedTime")
++            raw.removeValue(forKey: "timestamp")
++        }
++
++        for (k, v) in payload {
++            if v is NSNull {
++                raw.removeValue(forKey: k)
++            } else {
++                raw[k] = v
++            }
++        }
++
++        onUpdate?(currentTrack())
++    }
++
++    // MARK: - Track mapping
++
++    private func currentTrack() -> NowPlayingTrack? {
++        guard let title = raw["title"] as? String, !title.isEmpty else {
++            return nil
++        }
++
++        let artist = (raw["artist"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
++        let album = raw["album"] as? String
++        let playing = raw["playing"] as? Bool ?? false
++        let playbackRate = (raw["playbackRate"] as? NSNumber)?.doubleValue
++            ?? (playing ? 1.0 : 0.0)
++        let bundleID = raw["bundleIdentifier"] as? String
++
++        let duration = Self.seconds(
++            microsKey: "durationMicros",
++            secondsKey: "duration",
++            in: raw
++        )
++        let baseElapsed = Self.seconds(
++            microsKey: "elapsedTimeMicros",
++            secondsKey: "elapsedTime",
++            in: raw
++        )
++
++        let elapsed: TimeInterval?
++        if let base = baseElapsed {
++            if playing, let tsMicros = Self.int64(raw["timestampEpochMicros"]) {
++                let dt = Date().timeIntervalSince1970 - Double(tsMicros) / 1_000_000.0
++                let live = base + max(0, dt) * (playbackRate > 0 ? playbackRate : 1.0)
++                if let d = duration, d > 0 {
++                    elapsed = min(live, d)
++                } else {
++                    elapsed = live
++                }
++            } else {
++                elapsed = base
++            }
++        } else {
++            elapsed = nil
++        }
++
++        return NowPlayingTrack(
++            title: title,
++            artist: (artist?.isEmpty == false) ? artist! : "Unknown Artist",
++            album: (album?.isEmpty == false) ? album : nil,
++            duration: duration,
++            elapsedTime: elapsed,
++            isPlaying: playing || playbackRate > 0,
++            source: Self.source(forBundleID: bundleID)
++        )
++    }
++
++    private static func source(forBundleID bundleID: String?) -> NowPlayingSource {
++        guard let id = bundleID else { return .system }
++        switch id {
++        case spotifyBundleID:
++            return .spotify
++        case appleMusicBundleID:
++            return .appleMusic
++        case netEaseBundleID:
++            return .netease
++        case let s where s.hasPrefix("com.apple.Safari")
++            || s.contains("chrome")
++            || s.contains("firefox")
++            || s.contains("Chromium")
++            || s == "company.thebrowser.Browser"
++            || s == "com.brave.Browser":
++            return .browser
++        default:
++            return .system
++        }
++    }
++
++    private static func seconds(microsKey: String, secondsKey: String, in dict: [String: Any]) -> TimeInterval? {
++        if let micros = int64(dict[microsKey]) {
++            return Double(micros) / 1_000_000.0
++        }
++        if let n = dict[secondsKey] as? NSNumber {
++            return n.doubleValue
++        }
++        if let d = dict[secondsKey] as? Double {
++            return d
++        }
++        return nil
++    }
++
++    private static func int64(_ v: Any?) -> Int64? {
++        (v as? NSNumber)?.int64Value
++    }
++}
+diff --git a/lirik/Sources/NowPlaying/MediaRemoteBackend.swift b/lirik/Sources/NowPlaying/MediaRemoteBackend.swift
+index 43bc674..d859145 100644
+--- a/lirik/Sources/NowPlaying/MediaRemoteBackend.swift
++++ b/lirik/Sources/NowPlaying/MediaRemoteBackend.swift
+@@ -16,6 +16,9 @@
+ //  Last verified working: macOS 14.x (Sonoma) and earlier.
+ //  Last verified broken:  macOS 15.7.7 (build 24G720), 2026-08-05.
+ //
++//  On macOS 15.4+, NowPlayingWatcher prefers MediaControlBackend
++//  (mediaremote-adapter / media-control) instead of this direct path.
++//
+ 
+ import Foundation
+ 
+diff --git a/lirik/Sources/NowPlaying/NowPlayingTrack.swift b/lirik/Sources/NowPlaying/NowPlayingTrack.swift
+index 99d96fa..af6ecc7 100644
+--- a/lirik/Sources/NowPlaying/NowPlayingTrack.swift
++++ b/lirik/Sources/NowPlaying/NowPlayingTrack.swift
+@@ -13,6 +13,8 @@ import Foundation
+ enum NowPlayingSource: String, Sendable {
+     case spotify = "Spotify"
+     case appleMusic = "Apple Music"
++    case netease = "NetEase Cloud Music"
++    case system = "System Now Playing"
+     case browser = "Browser"
+     case unknown = "Unknown"
+ }
+diff --git a/lirik/Sources/NowPlaying/NowPlayingWatcher.swift b/lirik/Sources/NowPlaying/NowPlayingWatcher.swift
+index 6817cd2..6879ea0 100644
+--- a/lirik/Sources/NowPlaying/NowPlayingWatcher.swift
++++ b/lirik/Sources/NowPlaying/NowPlayingWatcher.swift
+@@ -4,11 +4,13 @@
+ //
+ //  Single source of truth for "what is playing right now," per AGENTS.md §7.
+ //  Consumers (LRCSyncEngine, LyricsWidget) interact only with this type —
+-//  never with MediaRemoteBackend or AppleScriptBackend directly.
++//  never with backends directly.
+ //
+-//  Auto-selects backend at startup:
+-//  1. Tries MediaRemote (works on macOS < 15.4)
+-//  2. Falls back to AppleScript polling (works on all supported macOS)
++//  Backend selection (respects Music Player Source preference):
++//  - Auto / System: prefer MediaControlBackend (mediaremote-adapter /
++//    media-control) so NetEase and any Now Playing app work on macOS 15.4+;
++//    fall back to legacy MediaRemote, then AppleScript (Spotify/Music only).
++//  - Spotify / Apple Music: AppleScript only (existing path).
+ //
+ 
+ import Foundation
+@@ -39,19 +41,23 @@ final class NowPlayingWatcher {
+ 
+     // MARK: - Backends
+ 
++    private let mediaControlBackend = MediaControlBackend()
+     private let mediaRemoteBackend = MediaRemoteBackend()
+     private let appleScriptBackend = AppleScriptBackend()
+ 
+     private enum ActiveBackend {
++        case mediaControl
+         case mediaRemote
+         case appleScript
+     }
+     private var activeBackend: ActiveBackend?
+ 
++    private var preferenceObserver: NSObjectProtocol?
++
+     // MARK: - Lifecycle
+ 
+     /// Starts watching for now-playing changes. Auto-detects which
+-    /// backend to use based on what actually works on this OS version.
++    /// backend to use based on preference + what works on this OS.
+     func startWatching() {
+         // Idempotent: if a backend is already active, just force a refresh
+         // rather than double-registering observers and timers.
+@@ -61,14 +67,10 @@ final class NowPlayingWatcher {
+             return
+         }
+ 
+-        NSLog("[NowPlayingWatcher] Starting — probing backends...")
++        observePlayerPreferenceChanges()
+ 
+-        if mediaRemoteBackend.isAvailable {
+-            probeMediaRemoteThenFallback()
+-        } else {
+-            NSLog("[NowPlayingWatcher] MediaRemote not available, using AppleScript")
+-            startAppleScriptBackend()
+-        }
++        NSLog("[NowPlayingWatcher] Starting — preference=\(preferredPlayer())")
++        startForCurrentPreference()
+     }
+ 
+     /// Forces an immediate refetch from whichever backend is active.
+@@ -79,13 +81,17 @@ final class NowPlayingWatcher {
+     /// Safe to call even before a backend is selected (no-op in that case).
+     func forceRefresh() {
+         switch activeBackend {
++        case .mediaControl:
++            mediaControlBackend.fetchNowPlaying { [weak self] track in
++                self?.handleUpdate(self?.filtered(track))
++            }
+         case .mediaRemote:
+             mediaRemoteBackend.fetchNowPlaying(timeout: 2.0) { [weak self] track in
+-                self?.handleUpdate(track)
++                self?.handleUpdate(self?.filtered(track))
+             }
+         case .appleScript:
+             appleScriptBackend.fetchNowPlaying { [weak self] track in
+-                self?.handleUpdate(track)
++                self?.handleUpdate(self?.filtered(track))
+             }
+         case .none:
+             break
+@@ -95,17 +101,86 @@ final class NowPlayingWatcher {
+     /// Stops all watching and cleans up.
+     func stopWatching() {
+         NSLog("[NowPlayingWatcher] Stopping")
++        tearDownBackends()
++        if let preferenceObserver {
++            NotificationCenter.default.removeObserver(preferenceObserver)
++            self.preferenceObserver = nil
++        }
++    }
++
++    // MARK: - Preference-driven selection
++
++    private func preferredPlayer() -> String {
++        UserDefaults.standard.string(forKey: LirikPreferenceViewController.keyPreferredPlayer) ?? "auto"
++    }
++
++    private func observePlayerPreferenceChanges() {
++        guard preferenceObserver == nil else { return }
++        preferenceObserver = NotificationCenter.default.addObserver(
++            forName: Notification.Name("io.github.ridhaaf.lirik.preferredPlayerChanged"),
++            object: nil,
++            queue: .main
++        ) { [weak self] _ in
++            guard let self else { return }
++            NSLog("[NowPlayingWatcher] Player preference changed → \(self.preferredPlayer()); restarting backends")
++            self.tearDownBackends()
++            self.startForCurrentPreference()
++        }
++    }
++
++    private func tearDownBackends() {
++        mediaControlBackend.stopStreaming()
+         mediaRemoteBackend.stopObserving()
+         appleScriptBackend.stopPolling()
+         activeBackend = nil
+     }
+ 
+-    // MARK: - Backend selection
++    private func startForCurrentPreference() {
++        let pref = preferredPlayer()
++        switch pref {
++        case "spotify", "music":
++            NSLog("[NowPlayingWatcher] Preference \(pref) — AppleScript backend")
++            startAppleScriptBackend()
++        case "system":
++            startSystemNowPlayingPath(allowAppleScriptFallback: false)
++        default: // "auto"
++            startSystemNowPlayingPath(allowAppleScriptFallback: true)
++        }
++    }
++
++    /// Prefers MediaControl (adapter / media-control), then legacy MediaRemote,
++    /// optionally AppleScript for Spotify/Music when system path is unavailable.
++    private func startSystemNowPlayingPath(allowAppleScriptFallback: Bool) {
++        if mediaControlBackend.isAvailable {
++            NSLog("[NowPlayingWatcher] Using MediaControlBackend (system Now Playing)")
++            startMediaControlBackend()
++            return
++        }
++
++        if mediaRemoteBackend.isAvailable {
++            NSLog("[NowPlayingWatcher] MediaControl unavailable — probing legacy MediaRemote")
++            probeMediaRemoteThenFallback(allowAppleScriptFallback: allowAppleScriptFallback)
++            return
++        }
++
++        if allowAppleScriptFallback {
++            NSLog("[NowPlayingWatcher] No system Now Playing backend — AppleScript fallback (Spotify/Music only)")
++            startAppleScriptBackend()
++        } else {
++            NSLog("[NowPlayingWatcher] ⚠️ System Now Playing unavailable. Install: brew install media-control")
++            // Still start MediaControl so a later brew install + widget reopen can work;
++            // for now emit nil.
++            activeBackend = .mediaControl
++            handleUpdate(nil)
++        }
++    }
++
++    // MARK: - Backend selection (legacy MediaRemote probe)
+ 
+     /// Tries a one-shot MediaRemote fetch with a short timeout.
+     /// If the callback fires, we use MediaRemote going forward.
+-    /// If it times out (macOS 15.4+), we fall back to AppleScript.
+-    private func probeMediaRemoteThenFallback() {
++    /// If it times out (macOS 15.4+), we fall back to AppleScript (when allowed).
++    private func probeMediaRemoteThenFallback(allowAppleScriptFallback: Bool) {
+         NSLog("[NowPlayingWatcher] Probing MediaRemote (2s timeout)...")
+ 
+         mediaRemoteBackend.fetchNowPlaying(timeout: 2.0) { [weak self] track in
+@@ -115,9 +190,6 @@ final class NowPlayingWatcher {
+                 NSLog("[NowPlayingWatcher] MediaRemote responded — using it as backend")
+                 self.startMediaRemoteBackend()
+             } else {
+-                // Ambiguous: could be "nothing playing" or "API blocked."
+-                // Try one more time after a short delay, then fall back.
+-                // The heuristic: if both fetches return nil, assume blocked.
+                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                     self.mediaRemoteBackend.fetchNowPlaying(timeout: 2.0) { [weak self] retryTrack in
+                         guard let self else { return }
+@@ -125,9 +197,13 @@ final class NowPlayingWatcher {
+                         if retryTrack != nil {
+                             NSLog("[NowPlayingWatcher] MediaRemote responded on retry — using it")
+                             self.startMediaRemoteBackend()
+-                        } else {
++                        } else if allowAppleScriptFallback {
+                             NSLog("[NowPlayingWatcher] MediaRemote timed out twice — falling back to AppleScript")
+                             self.startAppleScriptBackend()
++                        } else {
++                            NSLog("[NowPlayingWatcher] MediaRemote timed out — no AppleScript fallback for System mode")
++                            self.activeBackend = .mediaRemote
++                            self.handleUpdate(nil)
+                         }
+                     }
+                 }
+@@ -135,6 +211,16 @@ final class NowPlayingWatcher {
+         }
+     }
+ 
++    // MARK: - MediaControl backend
++
++    private func startMediaControlBackend() {
++        activeBackend = .mediaControl
++        mediaControlBackend.startStreaming { [weak self] newTrack in
++            guard let self else { return }
++            self.handleUpdate(self.filtered(newTrack))
++        }
++    }
++
+     // MARK: - MediaRemote backend
+ 
+     private func startMediaRemoteBackend() {
+@@ -143,7 +229,7 @@ final class NowPlayingWatcher {
+         mediaRemoteBackend.startObserving { [weak self] info in
+             guard let self else { return }
+             let newTrack = self.mediaRemoteBackend.parseInfo(info)
+-            self.handleUpdate(newTrack)
++            self.handleUpdate(self.filtered(newTrack))
+         }
+     }
+ 
+@@ -158,7 +244,25 @@ final class NowPlayingWatcher {
+ 
+         appleScriptBackend.startPolling { [weak self] newTrack in
+             guard let self else { return }
+-            self.handleUpdate(newTrack)
++            self.handleUpdate(self.filtered(newTrack))
++        }
++    }
++
++    // MARK: - Preference filter
++
++    /// Applies Music Player Source preference to a track from any backend.
++    private func filtered(_ track: NowPlayingTrack?) -> NowPlayingTrack? {
++        guard let track else { return nil }
++        switch preferredPlayer() {
++        case "spotify":
++            return track.source == .spotify ? track : nil
++        case "music":
++            return track.source == .appleMusic ? track : nil
++        case "system":
++            // Accept everything from system Now Playing (NetEase, browsers, etc.)
++            return track
++        default:
++            return track
+         }
+     }
+ 
+diff --git a/lirik/Sources/Widget/LirikPreferenceViewController.swift b/lirik/Sources/Widget/LirikPreferenceViewController.swift
+index 36d0a49..5741193 100644
+--- a/lirik/Sources/Widget/LirikPreferenceViewController.swift
++++ b/lirik/Sources/Widget/LirikPreferenceViewController.swift
+@@ -122,7 +122,7 @@ final class LirikPreferenceViewController: NSViewController, PKWidgetPreference
+         playerTitle.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+         playerStackView.addArrangedSubview(playerTitle)
+ 
+-        playerPopUp.addItems(withTitles: ["Auto-detect", "Spotify Only", "Apple Music Only"])
++        playerPopUp.addItems(withTitles: ["Auto-detect", "System Now Playing (网易云/any)", "Spotify Only", "Apple Music Only"])
+         playerStackView.addArrangedSubview(playerPopUp)
+         mainStackView.addArrangedSubview(playerStackView)
+ 
+@@ -189,7 +189,7 @@ final class LirikPreferenceViewController: NSViewController, PKWidgetPreference
+         trackInfoCheckbox.target = self
+         trackInfoCheckbox.action = #selector(onTrackInfoCheckboxChanged)
+ 
+-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 520))
++        let container = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 540))
+         mainStackView.frame = container.bounds
+         mainStackView.autoresizingMask = [.width, .height]
+         container.addSubview(mainStackView)
+@@ -232,11 +232,14 @@ final class LirikPreferenceViewController: NSViewController, PKWidgetPreference
+         }
+ 
+         let player = defaults.string(forKey: Self.keyPreferredPlayer) ?? "auto"
+-        if player == "spotify" {
++        switch player {
++        case "system":
+             playerPopUp.selectItem(at: 1)
+-        } else if player == "music" {
++        case "spotify":
+             playerPopUp.selectItem(at: 2)
+-        } else {
++        case "music":
++            playerPopUp.selectItem(at: 3)
++        default:
+             playerPopUp.selectItem(at: 0)
+         }
+ 
+@@ -294,11 +297,16 @@ final class LirikPreferenceViewController: NSViewController, PKWidgetPreference
+     @objc private func onPlayerChanged() {
+         let player: String
+         switch playerPopUp.indexOfSelectedItem {
+-        case 1: player = "spotify"
+-        case 2: player = "music"
++        case 1: player = "system"
++        case 2: player = "spotify"
++        case 3: player = "music"
+         default: player = "auto"
+         }
+         UserDefaults.standard.set(player, forKey: Self.keyPreferredPlayer)
++        NotificationCenter.default.post(
++            name: Notification.Name("io.github.ridhaaf.lirik.preferredPlayerChanged"),
++            object: nil
++        )
+     }
+ 
+     @objc private func onPauseCheckboxChanged() {
+diff --git a/scripts/build-mediaremote-adapter.sh b/scripts/build-mediaremote-adapter.sh
+new file mode 100755
+index 0000000..c693952
+--- /dev/null
++++ b/scripts/build-mediaremote-adapter.sh
+@@ -0,0 +1,17 @@
++#!/bin/bash
++# Build arm64/universal MediaRemoteAdapter.framework on macOS and place under vendor/.
++# Run on a Mac with Xcode + CMake. Not runnable on Linux.
++set -euo pipefail
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++WORKDIR="${TMPDIR:-/tmp}/mediaremote-adapter-build"
++rm -rf "$WORKDIR"
++git clone --depth 1 https://github.com/ungive/mediaremote-adapter.git "$WORKDIR"
++mkdir -p "$WORKDIR/build"
++cd "$WORKDIR/build"
++cmake ..
++cmake --build .
++DEST="$ROOT/vendor/MediaRemoteAdapter.framework"
++rm -rf "$DEST"
++cp -R MediaRemoteAdapter.framework "$DEST"
++echo "Installed: $DEST"
++lipo -info "$DEST/Versions/A/MediaRemoteAdapter" || true
+diff --git a/vendor/mediaremote-adapter/LICENSE b/vendor/mediaremote-adapter/LICENSE
+new file mode 100644
+index 0000000..e70a4bd
+--- /dev/null
++++ b/vendor/mediaremote-adapter/LICENSE
+@@ -0,0 +1,28 @@
++BSD 3-Clause License
++
++Copyright (c) 2025, Jonas van den Berg and contributors
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++
++1. Redistributions of source code must retain the above copyright notice, this
++   list of conditions and the following disclaimer.
++
++2. Redistributions in binary form must reproduce the above copyright notice,
++   this list of conditions and the following disclaimer in the documentation
++   and/or other materials provided with the distribution.
++
++3. Neither the name of the copyright holder nor the names of its
++   contributors may be used to endorse or promote products derived from
++   this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
++FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
++SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
++CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
++OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+\ No newline at end of file
+diff --git a/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl b/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl
+new file mode 100755
+index 0000000..c586bce
+--- /dev/null
++++ b/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl
+@@ -0,0 +1,290 @@
++#!/usr/bin/perl
++# Copyright (c) 2025 Jonas van den Berg
++# This file is licensed under the BSD 3-Clause License.
++
++# For usage information read below or run the script without arguments.
++
++use strict;
++use warnings;
++use DynaLoader;
++use File::Spec;
++use File::Basename;
++
++sub print_help() {
++  print <<'HELP';
++Usage:
++  mediaremote-adapter.pl FRAMEWORK_PATH [TEST_CLIENT_PATH]
++                         [FUNCTION [PARAMS|OPTIONS...]]
++
++FRAMEWORK_PATH:
++  Absolute path to the MediaRemoteAdapter.framework directory
++
++TEST_CLIENT_PATH: (optional)
++  Absolute path to the MediaRemoteAdapterTestClient executable. Only for "test"
++
++FUNCTION:
++  stream   Streams now playing information (as diff by default)
++  get      Prints now playing information once with all available metadata
++  send     Sends a command to the now playing application
++  seek     Seeks to a specific timeline position
++  shuffle  Sets the shuffle mode
++  repeat   Sets the repeat mode
++  speed    Sets the playback speed
++  test     Tests if the adapter is entitled to use the MediaRemote framework.
++           An exit code other than 0 indicates the adapter is non-functional
++
++PARAMS:
++  send(command)
++    command: The MRCommand ID as a number (e.g. kMRPlay = 0)
++  seek(position)
++    position: The timeline position in microseconds
++  shuffle(mode)
++    mode: The shuffle mode
++  repeat(mode)
++    mode: The repeat mode
++  speed(speed)
++    speed: The playback speed
++
++OPTIONS:
++  get
++    --now: Adds an "elapsedTimeNow" key with an estimation of the current
++      elapsed playback time. This estimation may be off by up to a second.
++      To determine a more accurate time without polling "get" continuously,
++      calculate it using the "elapsedTime" and "timestamp" keys. "elapsedTime"
++      contains the elapsed time at the time that is stored in "timestamp".
++  stream
++    --no-diff: Disable diffing and always dump all metadata
++    --debounce=N: Delay in milliseconds to prevent spam (0 by default)
++  get, stream
++    --micros: Replaces the following time keys with microsecond equivalents:
++      "duration" -> "durationMicros"
++      "elapsedTime" -> "elapsedTimeMicros"
++      "elapsedTimeNow" -> "elapsedTimeNowMicros"
++      "timestamp" -> "timestampEpochMicros" (converted to epoch time)
++    --no-artwork: Omits "artworkData" and "artworkMimeType" from the payload.
++      Useful for consumers that do not render artwork, since this avoids
++      emitting several hundred kilobytes of base64 data per update.
++    --allow-missing-title: By default, media with a null or absent title is
++      ignored. This flag leads to media with a null or absent title being
++      emitted. The consumer needs to explicitly handle the possibility of the
++      title being null or absent.
++    --human-readable, -h: Makes values human-readable. Use only for debugging.
++      The JSON output is pretty-printed and the following keys are adapted:
++      "artworkData" -> Binary data is truncated to a shorter representation
++
++Examples (script name and framework path omitted):
++  stream --no-diff --debounce=100
++  send 2    # Toggles play/pause in the media player (kMRATogglePlayPause)
++  repeat 3  # Sets the repeat mode to "playlist" (kMRARepeatModePlaylist)
++
++HELP
++  exit 0;
++}
++
++if (!defined $ARGV[1]) {
++  print_help();
++}
++
++sub fail {
++  my ($error) = @_;
++  print STDERR "$error\n";
++  exit 1;
++}
++
++fail "Framework path not provided" unless @ARGV >= 1;
++
++my $framework_path = shift @ARGV;
++
++# Optionally accept MEDIAREMOTEADAPTER_TEST_CLIENT_PATH path as second argument
++my $maybe_helper_path = $ARGV[0] // '';
++if ($maybe_helper_path =~ m{/}){
++  my $helper_path = shift @ARGV;
++  $ENV{MEDIAREMOTEADAPTER_TEST_CLIENT_PATH} = $helper_path;
++}
++
++if (!defined $ARGV[0]) {
++  print_help();
++}
++
++my $framework_basename = File::Basename::basename($framework_path);
++fail "Provided path is not a framework: $framework_path"
++  unless $framework_basename =~ s/\.framework$//;
++
++my $framework = File::Spec->catfile($framework_path, $framework_basename);
++fail "Framework not found at $framework" unless -e $framework;
++
++my $handle = DynaLoader::dl_load_file($framework, 0)
++  or fail "Failed to load framework: $framework";
++my $function_name = shift @ARGV or fail "Missing function name";
++fail "Invalid function name: '$function_name'"
++  unless $function_name eq "stream"
++  || $function_name eq "get"
++  || $function_name eq "send"
++  || $function_name eq "seek"
++  || $function_name eq "shuffle"
++  || $function_name eq "repeat"
++  || $function_name eq "speed"
++  || $function_name eq "test";
++
++sub parse_options {
++  my ($start_index) = @_;
++  my %arg_map;
++  my $i = $start_index;
++  while ($i <= $#ARGV) {
++    my $arg = $ARGV[$i];
++    if ($arg =~ /^--([a-z:\.\\-]+)(?:=(.*))?$/) {
++      my $key = $1;
++      my $value = defined $2 ? $2 : undef;
++      $arg_map{$key} = $value;
++      splice @ARGV, $i, 1;
++    }
++    elsif ($arg =~ /^-([a-zA-Z]+)$/) {
++      my @flags = split //, $1;
++      $arg_map{$_} = undef for @flags;
++      splice @ARGV, $i, 1;
++    }
++    else {
++      $i++;
++    }
++  }
++  return \%arg_map;
++}
++
++sub env_func {
++  my $symbol_name = shift;
++  return "${symbol_name}_env";
++}
++
++sub set_env_param {
++  my ($func, $index, $name, $value) = @_;
++  $ENV{"MEDIAREMOTEADAPTER_PARAM_${func}_${index}_${name}"} = "$value";
++}
++
++sub set_env_option_unsafe {
++  my ($name, $value) = @_;
++  $name =~ s/-/_/g;
++  $ENV{"MEDIAREMOTEADAPTER_OPTION_${name}"} = defined $value ? "$value" : "";
++}
++
++sub set_env_option {
++  my ($options, $key) = @_;
++  my $value = $options->{$key};
++  if (defined $value) {
++    fail "Unexpected value for option '$key'";
++  }
++  set_env_option_unsafe($key, $value);
++}
++
++sub set_env_option_value {
++  my ($options, $key) = @_;
++  my $value = $options->{$key};
++  if (!defined $value) {
++    fail "Missing value for option '$key'";
++  }
++  set_env_option_unsafe($key, $value);
++}
++
++my $symbol_name = "adapter_$function_name";
++if ($function_name eq "send") {
++  my $id = shift @ARGV;
++  fail "Missing ID for '$function_name' command" unless defined $id;
++  set_env_param($symbol_name, 0, "command", "$id");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "stream") {
++  my $options = parse_options(0);
++  foreach my $key (keys %{$options}) {
++    if ($key eq "no-diff") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "debounce") {
++      set_env_option_value($options, $key);
++    }
++    elsif ($key eq "micros") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "no-artwork") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "allow-missing-title") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "human-readable" || $key eq "h") {
++      set_env_option($options, "human-readable");
++    }
++    elsif ($key eq "experimental-peculiar-debounce:com.tidal.desktop") {
++      set_env_option_value($options, $key);
++    }
++    else {
++      fail "Unrecognized option '$key'";
++    }
++  }
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "get") {
++  my $options = parse_options(0);
++  foreach my $key (keys %{$options}) {
++    if ($key eq "micros") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "no-artwork") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "allow-missing-title") {
++      set_env_option($options, $key);
++    }
++    elsif ($key eq "human-readable" || $key eq "h") {
++      set_env_option($options, "human-readable");
++    }
++    elsif ($key eq "now") {
++      set_env_option($options, $key);
++    }
++    else {
++      fail "Unrecognized option '$key'";
++    }
++  }
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "seek") {
++  my $position = shift @ARGV;
++  fail "Missing position for '$function_name' command" unless defined $position;
++  set_env_param($symbol_name, 0, "position", "$position");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "shuffle") {
++  my $mode = shift @ARGV;
++  fail "Missing mode for '$function_name' command" unless defined $mode;
++  set_env_param($symbol_name, 0, "mode", "$mode");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "repeat") {
++  my $mode = shift @ARGV;
++  fail "Missing mode for '$function_name' command" unless defined $mode;
++  set_env_param($symbol_name, 0, "mode", "$mode");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "speed") {
++  my $speed = shift @ARGV;
++  fail "Missing speed for '$function_name' command" unless defined $speed;
++  set_env_param($symbol_name, 0, "speed", "$speed");
++  $symbol_name = env_func($symbol_name);
++}
++elsif ($function_name eq "test") {
++  $symbol_name = "adapter_test";
++}
++
++if (defined shift @ARGV) {
++  fail "Too many arguments";
++}
++
++my $symbol = DynaLoader::dl_find_symbol($handle, "$symbol_name")
++  or fail "Symbol '$symbol_name' not found in $framework";
++DynaLoader::dl_install_xsub("main::$function_name", $symbol);
++
++eval {
++  no strict "refs";
++  &{"main::$function_name"}();
++};
++if ($@) {
++  fail "Error executing $function_name: $@";
++}

@@ -1,0 +1,77 @@
+name: Build lirik.pock (NetEase / System Now Playing)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, netease]
+
+concurrency:
+  group: build-pock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS Release
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          swift --version
+
+      - name: Install CocoaPods
+        run: |
+          if ! command -v pod >/dev/null; then
+            brew install cocoapods
+          fi
+          pod --version
+
+      - name: pod install
+        run: pod install --repo-update
+
+      - name: Build lirik.pock
+        run: |
+          set -euo pipefail
+          # CI has no Apple Developer team from upstream pbxproj.
+          xcodebuild \
+            -workspace lirik.xcworkspace \
+            -scheme lirik \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            build
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          POCK=$(find build/DerivedData -name 'lirik.pock' -type d | head -n 1)
+          if [ -z "${POCK}" ]; then
+            echo "lirik.pock not found" >&2
+            find build/DerivedData -maxdepth 6 -type d | head -80
+            exit 1
+          fi
+          echo "Found: $POCK"
+          mkdir -p dist-ci
+          ditto "$POCK" dist-ci/lirik.pock
+          (cd dist-ci && zip -r -y lirik-netease.pock.zip lirik.pock)
+          ls -laR dist-ci
+
+      - name: Upload lirik.pock
+        uses: actions/upload-artifact@v4
+        with:
+          name: lirik-netease-pock
+          path: |
+            dist-ci/lirik.pock
+            dist-ci/lirik-netease.pock.zip
+          if-no-files-found: error
+          retention-days: 14
