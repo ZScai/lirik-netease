@@ -96,7 +96,6 @@
 				DE8B9BDE302327A200535EE1 /* Sources */,
 				DE8B9BDF302327A200535EE1 /* Frameworks */,
 				DE8B9BE0302327A200535EE1 /* Resources */,
-				A1B2C3D4E5F607182930A1B2 /* [NetEase] Copy mediaremote-adapter framework */,
 				DE8B9BE1302327A200535EE1 /* [PK] Install widget */,
 			);
 			buildRules = (
@@ -195,36 +194,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "# Install widget.\necho \"[${PRODUCT_NAME}.pock] Starting installation\"\nFILEPATH=$TARGET_BUILD_DIR/$PRODUCT_NAME.pock \nopen \"$FILEPATH\"";
-		};
-		A1B2C3D4E5F607182930A1B2 /* [NetEase] Copy mediaremote-adapter framework */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "[NetEase] Copy mediaremote-adapter framework";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "# Optional framework only. .pl ships via Copy Bundle Resources.
-set -e
-RES="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
-mkdir -p "$RES"
-if [ -d "${SRCROOT}/vendor/MediaRemoteAdapter.framework" ]; then
-  rm -rf "$RES/MediaRemoteAdapter.framework"
-  cp -R "${SRCROOT}/vendor/MediaRemoteAdapter.framework" "$RES/"
-  echo "[NetEase] Bundled MediaRemoteAdapter.framework"
-else
-  echo "[NetEase] No framework in vendor — use brew media-control"
-fi
-";
 		};
 /* End PBXShellScriptBuildPhase section */
 
