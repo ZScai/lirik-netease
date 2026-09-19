@@ -218,19 +218,21 @@ class LyricsWidget: NSObject, PKWidget {
         containerView.orientation = .horizontal
         containerView.alignment = .centerY
         containerView.distribution = .fill
-        containerView.spacing = 4
-        containerView.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 4)
+        containerView.spacing = 3
+        containerView.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
         // Content stack view (vertical: text stack)
         contentStackView.orientation = .vertical
         contentStackView.alignment = .leading
         contentStackView.distribution = .fill
-        contentStackView.spacing = 1
+        contentStackView.setHuggingPriority(.required, for: .vertical)
+        contentStackView.spacing = 0
 
         // Text stack view (vertical: current line + next line)
         textStackView.orientation = .vertical
         textStackView.alignment = .leading
-        textStackView.distribution = .fillProportionally
+        textStackView.distribution = .fill
+        textStackView.setHuggingPriority(.required, for: .vertical)
         textStackView.spacing = 0
 
         // Current line label (bold 11pt for Touch Bar karaoke primary line)
@@ -259,21 +261,26 @@ class LyricsWidget: NSObject, PKWidget {
         tapButton.isBordered = false
         tapButton.addSubview(contentStackView)
 
-        // Layout contentStackView to fill tapButton bounds
+        // Center content vertically in the Touch Bar strip; pin horizontally.
+        // (Filling top/bottom made two-line lyrics sit optically high.)
         contentStackView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             contentStackView.leadingAnchor.constraint(equalTo: tapButton.leadingAnchor),
             contentStackView.trailingAnchor.constraint(equalTo: tapButton.trailingAnchor),
-            contentStackView.topAnchor.constraint(equalTo: tapButton.topAnchor),
-            contentStackView.bottomAnchor.constraint(equalTo: tapButton.bottomAnchor)
+            contentStackView.centerYAnchor.constraint(equalTo: tapButton.centerYAnchor)
         ])
 
         containerView.addArrangedSubview(albumArtImageView)
         containerView.addArrangedSubview(tapButton)
 
-        // Prevent widget from resizing when lyrics change length
+        // Keep a compact fixed width so other Pock widgets still have room.
+        // (Was >=280 which dominated the Touch Bar and left empty side padding.)
         containerView.translatesAutoresizingMaskIntoConstraints = false
-        containerView.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
+        containerView.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        containerView.setContentHuggingPriority(.required, for: .horizontal)
+        containerView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tapButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tapButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         self.view = containerView
     }
