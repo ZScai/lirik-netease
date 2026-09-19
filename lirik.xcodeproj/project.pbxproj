@@ -198,26 +198,33 @@
 		};
 		A1B2C3D4E5F607182930A1B2 /* [NetEase] Copy mediaremote-adapter framework */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"${SRCROOT}/vendor/MediaRemoteAdapter.framework",
-				"${SRCROOT}/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl",
 			);
 			name = "[NetEase] Copy mediaremote-adapter framework";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/MediaRemoteAdapter.framework",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/mediaremote-adapter.pl",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Optional: copy arm64/universal MediaRemoteAdapter.framework into the .pock bundle.\n# If missing, runtime falls back to Homebrew media-control.\nset -e\nRES=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$RES\"\n# Prefer Resources copy already synced from lirik/Resources; ensure pl is present\nif [ -f \"${SRCROOT}/lirik/Resources/mediaremote-adapter.pl\" ]; then\n  cp -f \"${SRCROOT}/lirik/Resources/mediaremote-adapter.pl\" \"$RES/mediaremote-adapter.pl\"\nelif [ -f \"${SRCROOT}/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl\" ]; then\n  cp -f \"${SRCROOT}/vendor/mediaremote-adapter/bin/mediaremote-adapter.pl\" \"$RES/mediaremote-adapter.pl\"\nfi\nif [ -d \"${SRCROOT}/vendor/MediaRemoteAdapter.framework\" ]; then\n  rm -rf \"$RES/MediaRemoteAdapter.framework\"\n  cp -R \"${SRCROOT}/vendor/MediaRemoteAdapter.framework\" \"$RES/\"\n  echo \"[NetEase] Bundled MediaRemoteAdapter.framework\"\nelse\n  echo \"[NetEase] No vendor/MediaRemoteAdapter.framework — runtime will use brew media-control if installed\"\nfi\n";
-			showEnvVarsInLog = 0;
+			shellScript = "# Optional framework only. .pl ships via Copy Bundle Resources.
+set -e
+RES="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+mkdir -p "$RES"
+if [ -d "${SRCROOT}/vendor/MediaRemoteAdapter.framework" ]; then
+  rm -rf "$RES/MediaRemoteAdapter.framework"
+  cp -R "${SRCROOT}/vendor/MediaRemoteAdapter.framework" "$RES/"
+  echo "[NetEase] Bundled MediaRemoteAdapter.framework"
+else
+  echo "[NetEase] No framework in vendor — use brew media-control"
+fi
+";
 		};
 /* End PBXShellScriptBuildPhase section */
 
