@@ -99,6 +99,8 @@ class LyricsWidget: NSObject, PKWidget {
 
     private var activeTrackKey: String = ""
     private var inFlightFetchTask: Task<Void, Never>?
+    /// Coalesce NetEase/media-control metadata diffs before hitting LRCLIB.
+    private var loadLyricsDebounceWork: DispatchWorkItem?
 
     private var uiState: LyricsWidgetUIState = .noTrackPlaying {
         didSet {
@@ -322,8 +324,9 @@ class LyricsWidget: NSObject, PKWidget {
         nowPlayingWatcher.onTrackChange = { [weak self] track in
             guard let self else { return }
 
-            // Cancel any in-flight fetch task from previous track immediately
+            // Cancel any in-flight fetch / debounce from previous track immediately
             self.inFlightFetchTask?.cancel()
+            self.loadLyricsDebounceWork?.cancel()
 
             if let track = track {
                 self.isCurrentlyPaused = !track.isPlaying
@@ -336,8 +339,23 @@ class LyricsWidget: NSObject, PKWidget {
                     self.trackInfoVisibleUntil = Date().addingTimeInterval(3.0)
                 }
 
-                self.loadLyrics(for: track, expectedKey: newKey, forceRefresh: false)
-                self.fetchAlbumArt(for: track)
+                // Debounce: wait for duration/artist diffs to settle (esp. 网易云).
+                self.uiState = .loading(title: track.title, artist: track.artist)
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    guard self.activeTrackKey == newKey else { return }
+                    // Re-read latest track in case duration arrived during debounce.
+                    let latest = self.nowPlayingWatcher.currentTrack ?? track
+                    let key = LyricsCache.makeTrackKey(
+                        title: latest.title, artist: latest.artist, duration: latest.duration)
+                    self.activeTrackKey = key
+                    // If we only just learned duration, bypass a stale duration-0 notFound cache.
+                    let force = (track.duration ?? 0) <= 0 && (latest.duration ?? 0) > 0
+                    self.loadLyrics(for: latest, expectedKey: key, forceRefresh: force)
+                    self.fetchAlbumArt(for: latest)
+                }
+                self.loadLyricsDebounceWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
             } else {
                 self.activeTrackKey = ""
                 self.activeLines = []
@@ -465,12 +483,24 @@ class LyricsWidget: NSObject, PKWidget {
 
                 // Final check before committing state
                 guard !Task.isCancelled, self.activeTrackKey == expectedKey else { return }
-                self.lyricsCache.save(cachedEntry)
+                // Never persist notFound when duration was unknown — that miss is often
+                // from a half-updated Now Playing payload, not a real LRCLIB miss.
+                let durationKnown = (track.duration ?? 0) > 0
+                if case .notFound = result, !durationKnown {
+                    NSLog("[LyricsWidget] Skipping notFound cache (duration unknown) for \(track.title)")
+                } else {
+                    self.lyricsCache.save(cachedEntry)
+                }
                 self.uiState = newState
 
+            } catch is CancellationError {
+                return
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                return
             } catch {
                 guard !Task.isCancelled, self.activeTrackKey == expectedKey else { return }
                 NSLog("[LyricsWidget] Network error loading lyrics: \(error.localizedDescription)")
+                // Transient errors: show empty state but do not poison the disk cache.
                 self.uiState = .noLyricsFound(title: track.title, artist: track.artist)
             }
         }

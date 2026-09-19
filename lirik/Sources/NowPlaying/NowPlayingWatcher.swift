@@ -273,18 +273,28 @@ final class NowPlayingWatcher {
     private func handleUpdate(_ newTrack: NowPlayingTrack?) {
         // Track change detection
         let isNewTrack: Bool
+        // NetEase / media-control often delivers title first, then duration in a
+        // later diff. Duration 0 → "notFound" must not stick forever.
+        let durationBecameKnown: Bool
         switch (currentTrack, newTrack) {
         case (nil, nil):
             return // No change: still nothing playing
         case (nil, .some):
             isNewTrack = true
+            durationBecameKnown = false
         case (.some, nil):
             isNewTrack = true
+            durationBecameKnown = false
         case let (.some(old), .some(new)):
             isNewTrack = !old.isSameTrack(as: new)
+            let oldDur = old.duration ?? 0
+            let newDur = new.duration ?? 0
+            durationBecameKnown = old.isSameTrack(as: new)
+                && oldDur <= 0
+                && newDur > 0
         }
 
-        if isNewTrack {
+        if isNewTrack || durationBecameKnown {
             currentTrack = newTrack
             onTrackChange?(newTrack)
         } else {

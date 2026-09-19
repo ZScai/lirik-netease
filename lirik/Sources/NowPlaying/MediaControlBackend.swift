@@ -325,14 +325,27 @@ final class MediaControlBackend {
         let isDiff = obj["diff"] as? Bool ?? false
         if !isDiff { raw = [:] }
 
-        // Drop stale elapsed when title changes without a new position.
+        // Drop stale fields when the title changes. NetEase often sends the
+        // new title in one diff and duration/artist in a later one — keeping
+        // the previous duration makes LRCLIB keys wrong and "notFound" sticky.
         if let newTitle = payload["title"] as? String,
-           newTitle != (raw["title"] as? String),
-           payload["elapsedTimeMicros"] == nil {
-            raw.removeValue(forKey: "elapsedTimeMicros")
-            raw.removeValue(forKey: "timestampEpochMicros")
-            raw.removeValue(forKey: "elapsedTime")
-            raw.removeValue(forKey: "timestamp")
+           newTitle != (raw["title"] as? String) {
+            if payload["elapsedTimeMicros"] == nil && payload["elapsedTime"] == nil {
+                raw.removeValue(forKey: "elapsedTimeMicros")
+                raw.removeValue(forKey: "timestampEpochMicros")
+                raw.removeValue(forKey: "elapsedTime")
+                raw.removeValue(forKey: "timestamp")
+            }
+            if payload["durationMicros"] == nil && payload["duration"] == nil {
+                raw.removeValue(forKey: "durationMicros")
+                raw.removeValue(forKey: "duration")
+            }
+            if payload["artist"] == nil {
+                raw.removeValue(forKey: "artist")
+            }
+            if payload["album"] == nil {
+                raw.removeValue(forKey: "album")
+            }
         }
 
         for (k, v) in payload {
