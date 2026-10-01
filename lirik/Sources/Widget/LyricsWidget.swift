@@ -68,7 +68,7 @@ class LyricsWidget: NSObject, PKWidget {
 
     // MARK: - UI Components
 
-    private let containerView = NSStackView()
+    private let containerView = LyricsStripView()
     private let contentStackView = NSStackView()
     private let textStackView = NSStackView()
     private let tapButton = PKButton(title: "", target: nil, action: nil)
@@ -115,6 +115,15 @@ class LyricsWidget: NSObject, PKWidget {
     private var activeLines: [LRCLine] = []
     private var isCurrentlyPaused: Bool = false
 
+    /// Idle (paused / stopped / no session) collapses the strip. Starts collapsed
+    /// so Pock launch does not flash the "Lirik / No track playing" placeholder.
+    private var visibility = LyricsStripVisibility(collapsed: true)
+    private var stripCollapsed = true
+    private var hideWork: DispatchWorkItem?
+    /// Automation denial must stay on screen even though nothing is playing.
+    private var holdVisibleForPermission = false
+    private var containerWidthConstraint: NSLayoutConstraint?
+
     // MARK: - Init
 
     required override init() {
@@ -128,6 +137,7 @@ class LyricsWidget: NSObject, PKWidget {
     }
 
     deinit {
+        hideWork?.cancel()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
@@ -142,12 +152,18 @@ class LyricsWidget: NSObject, PKWidget {
         // app switch, etc.) force a fresh poll so we don't render stale state.
         nowPlayingWatcher.forceRefresh()
         // Also re-render current state so any UI derived from stale elapsed
-        // time recomputes against the freshest snapshot.
-        DispatchQueue.main.async { [weak self] in self?.updateUI() }
+        // time recomputes against the freshest snapshot. Visibility follows
+        // the refreshed play state (collapsed until something is actually playing).
+        DispatchQueue.main.async { [weak self] in
+            self?.syncStripVisibility()
+            self?.updateUI()
+        }
     }
 
     func viewDisappeared() {
         NSLog("[LyricsWidget] viewDisappeared — stopping NowPlayingWatcher")
+        hideWork?.cancel()
+        hideWork = nil
         inFlightFetchTask?.cancel()
         nowPlayingWatcher.stopWatching()
     }
@@ -239,11 +255,13 @@ class LyricsWidget: NSObject, PKWidget {
         textStackView.setHuggingPriority(.required, for: .vertical)
         textStackView.spacing = 0
 
-        // Current line label (bold 11pt for Touch Bar karaoke primary line)
+        // Current line label (bold 11pt for Touch Bar karaoke primary line).
+        // Empty until playback is confirmed — the idle placeholder used to sit
+        // on the bar after pause / quit.
         currentLineLabel.font = NSFont.boldSystemFont(ofSize: 11)
         currentLineLabel.textColor = .labelColor
         currentLineLabel.lineBreakMode = .byTruncatingTail
-        currentLineLabel.stringValue = "Lirik"
+        currentLineLabel.stringValue = ""
         currentLineLabel.wantsLayer = true
 
         // Next line label (dimmed 9pt for Touch Bar karaoke secondary line)
@@ -279,8 +297,14 @@ class LyricsWidget: NSObject, PKWidget {
 
         // Keep a compact fixed width so other Pock widgets still have room.
         // (Was >=280 which dominated the Touch Bar and left empty side padding.)
+        // The constant drops to 0 while idle so the item gives that space back.
         containerView.translatesAutoresizingMaskIntoConstraints = false
-        containerView.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        let width = containerView.widthAnchor.constraint(equalToConstant: 0)
+        width.isActive = true
+        containerWidthConstraint = width
+        containerView.isCollapsed = true
+        containerView.isHidden = true
+        tapButton.isHidden = true
         containerView.setContentHuggingPriority(.required, for: .horizontal)
         containerView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tapButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -317,14 +341,35 @@ class LyricsWidget: NSObject, PKWidget {
     // MARK: - Watcher Callbacks
 
     private func setupWatcherCallbacks() {
-        // Handle permission error notification
+        // Handle permission error notification. Keep this visible: hiding it
+        // would look the same as "nothing playing" and the user couldn't tell
+        // why lyrics never come back.
         nowPlayingWatcher.onPermissionDenied = { [weak self] appName in
-            self?.uiState = .permissionDenied(appName: appName)
+            guard let self else { return }
+            self.holdVisibleForPermission = true
+            self.uiState = .permissionDenied(appName: appName)
+            self.syncStripVisibility()
         }
 
         // Handle track changes & rapid skipping
         nowPlayingWatcher.onTrackChange = { [weak self] track in
             guard let self else { return }
+
+            if let track = track {
+                let newKey = LyricsCache.makeTrackKey(title: track.title, artist: track.artist, duration: track.duration)
+                // A track-change gap often looks like nil, then the same song
+                // again. Don't cancel the in-flight fetch or flash "Fetching"
+                // when we already have that song loaded.
+                if newKey == self.activeTrackKey, self.hasRetainedLyrics {
+                    self.holdVisibleForPermission = false
+                    self.isCurrentlyPaused = !track.isPlaying
+                    self.syncStripVisibility()
+                    if track.isPlaying, !self.stripCollapsed {
+                        self.updateUI()
+                    }
+                    return
+                }
+            }
 
             self.inFlightFetchTask?.cancel()
             self.loadLyricsDebounceWork?.cancel()
@@ -332,6 +377,7 @@ class LyricsWidget: NSObject, PKWidget {
             let generation = self.loadLyricsGeneration
 
             if let track = track {
+                self.holdVisibleForPermission = false
                 self.isCurrentlyPaused = !track.isPlaying
                 let newKey = LyricsCache.makeTrackKey(title: track.title, artist: track.artist, duration: track.duration)
                 self.activeTrackKey = newKey
@@ -356,11 +402,16 @@ class LyricsWidget: NSObject, PKWidget {
                 self.loadLyricsDebounceWork = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
             } else {
-                self.activeTrackKey = ""
-                self.activeLines = []
+                // Leave the last line (and any in-flight fetch) in place until
+                // the hide debounce commits. Cancelling here made a brief nil
+                // between NetEase tracks look like a full miss.
                 self.isCurrentlyPaused = false
-                self.uiState = .noTrackPlaying
             }
+            self.syncStripVisibility()
+        }
+
+        nowPlayingWatcher.onPlaybackStateChange = { [weak self] _ in
+            self?.syncStripVisibility()
         }
 
         // Handle elapsed time ticks for synced & static lyrics
@@ -371,12 +422,16 @@ class LyricsWidget: NSObject, PKWidget {
 
             DispatchQueue.main.async {
                 self.isCurrentlyPaused = !track.isPlaying
+                self.syncStripVisibility()
+                // Paused ticks must not repaint a pause badge onto a line
+                // that's about to collapse. Playing ticks keep following the song.
+                guard track.isPlaying, !self.stripCollapsed else { return }
 
                 if case .synced(_, _, let lines) = self.uiState {
                     let snapshot = LRCSyncEngine.resolve(elapsedTime: elapsed, lines: lines)
-                    self.renderSyncSnapshot(snapshot, isPaused: !track.isPlaying)
+                    self.renderSyncSnapshot(snapshot, isPaused: false)
                 } else if case .staticOnly(_, _, let text) = self.uiState {
-                    self.renderStaticLyrics(text, elapsed: elapsed, trackDuration: track.duration, isPaused: !track.isPlaying)
+                    self.renderStaticLyrics(text, elapsed: elapsed, trackDuration: track.duration, isPaused: false)
                 }
             }
         }
@@ -532,9 +587,133 @@ class LyricsWidget: NSObject, PKWidget {
         }
     }
 
+    // MARK: - Idle hide / show
+
+    /// Lyrics (or an in-flight load) we can keep across a brief nil gap.
+    private var hasRetainedLyrics: Bool {
+        switch uiState {
+        case .loading, .synced, .staticOnly:
+            // `.noLyricsFound` is intentionally not retained: a later play of
+            // the same title must still retry LRCLIB and the NetEase fallback.
+            return !activeTrackKey.isEmpty
+        case .noTrackPlaying, .noLyricsFound, .permissionDenied:
+            return false
+        }
+    }
+
+    /// True when the strip should occupy its 180pt slot right now.
+    /// Paused and absent sessions are idle. A permission error is not:
+    /// the prompt has to stay readable.
+    private func playbackWantsLyricsVisible() -> Bool {
+        if holdVisibleForPermission { return true }
+        return nowPlayingWatcher.currentTrack?.isPlaying == true
+    }
+
+    /// Applies `LyricsStripVisibility` to the Touch Bar item.
+    /// Showing is immediate. Hiding waits out `hideDebounce` and does not
+    /// restart that wait on later idle snapshots (poll ticks, metadata diffs).
+    private func syncStripVisibility() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.syncStripVisibility()
+            }
+            return
+        }
+
+        let playing = playbackWantsLyricsVisible()
+        visibility.consume(playing: playing, now: Date())
+
+        if visibility.collapsed {
+            hideWork?.cancel()
+            hideWork = nil
+            // Collapse first so the uiState change below can't paint
+            // "No track playing" into a still-visible 180pt slot.
+            applyStripCollapsed(true)
+            // Pause keeps the loaded lyrics so resume can paint them again.
+            // A real session loss drops the fetch fence once the strip is hidden,
+            // so a late response can't resurrect a line the user already left.
+            if !holdVisibleForPermission, nowPlayingWatcher.currentTrack == nil {
+                inFlightFetchTask?.cancel()
+                loadLyricsDebounceWork?.cancel()
+                loadLyricsGeneration &+= 1
+                activeTrackKey = ""
+                activeLines = []
+                isCurrentlyPaused = false
+                if uiState != .noTrackPlaying {
+                    uiState = .noTrackPlaying
+                }
+            }
+            return
+        }
+
+        applyStripCollapsed(false)
+
+        if playing {
+            hideWork?.cancel()
+            hideWork = nil
+            return
+        }
+
+        guard hideWork == nil else { return }
+        let delay = max(0, (visibility.hideDeadline ?? Date()).timeIntervalSinceNow)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.hideWork = nil
+            self.syncStripVisibility()
+        }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Collapses the Pock item to zero width (and hides it) so a paused or
+    /// missing session doesn't leave an empty 180pt gap. The 180pt,
+    /// vertically centered layout is restored unchanged when playback returns.
+    private func applyStripCollapsed(_ collapsed: Bool) {
+        guard collapsed != stripCollapsed else { return }
+        stripCollapsed = collapsed
+
+        let width: CGFloat = collapsed ? 0 : LyricsStripView.visibleWidth
+        containerWidthConstraint?.constant = width
+        containerView.isCollapsed = collapsed
+        // Frame width is what Pock/NSTouchBar read when deciding how much
+        // strip the item occupies. The constraint keeps Auto Layout in agreement.
+        var frame = containerView.frame
+        frame.size.width = width
+        containerView.frame = frame
+        containerView.isHidden = collapsed
+        tapButton.isHidden = collapsed
+
+        if collapsed {
+            currentLineLabel.stringValue = ""
+            nextLineLabel.stringValue = ""
+            albumArtImageView.isHidden = true
+            NSLog("[LyricsWidget] Hiding lyrics strip — playback paused or nothing playing")
+        } else {
+            isCurrentlyPaused = nowPlayingWatcher.currentTrack?.isPlaying == false
+            let showArt = UserDefaults.standard.object(forKey: LirikPreferenceViewController.keyShowAlbumArt) as? Bool ?? false
+            albumArtImageView.isHidden = !(showArt && albumArtImageView.image != nil)
+            NSLog("[LyricsWidget] Showing lyrics strip — playback active")
+            updateUI()
+        }
+
+        containerView.invalidateIntrinsicContentSize()
+        containerView.needsLayout = true
+        containerView.superview?.needsLayout = true
+        containerView.layoutSubtreeIfNeeded()
+    }
+
     // MARK: - UI Rendering
 
     private func updateUI() {
+        // While the item is collapsed, don't write a placeholder back into
+        // the labels — that's the stale line this hide path exists to avoid.
+        if stripCollapsed {
+            currentLineLabel.stringValue = ""
+            nextLineLabel.stringValue = ""
+            albumArtImageView.isHidden = true
+            return
+        }
+
         switch uiState {
         case .noTrackPlaying:
             currentLineLabel.stringValue = "Lirik"
@@ -750,9 +929,12 @@ class LyricsWidget: NSObject, PKWidget {
             }
 
             DispatchQueue.main.async {
+                // Don't pop the thumbnail back into a collapsed strip; resume
+                // restores it from the image already stored here.
+                let reveal = !self.stripCollapsed
                 if let image = image {
                     self.albumArtImageView.image = image
-                    self.albumArtImageView.isHidden = false
+                    self.albumArtImageView.isHidden = !reveal
                 } else {
                     // No artwork found — show a music note placeholder
                     let placeholder = NSImage(
@@ -760,7 +942,7 @@ class LyricsWidget: NSObject, PKWidget {
                         accessibilityDescription: "Album Art"
                     )
                     self.albumArtImageView.image = placeholder
-                    self.albumArtImageView.isHidden = false
+                    self.albumArtImageView.isHidden = !reveal
                 }
             }
         }
@@ -828,5 +1010,27 @@ class LyricsWidget: NSObject, PKWidget {
         }
 
         return artist
+    }
+}
+
+/// Pock sizes each widget from the item view's fitting size. A zero intrinsic
+/// width (paired with the width constraint) gives the slot back to neighbors
+/// instead of leaving the fixed 180pt lyrics gap on screen.
+private final class LyricsStripView: NSStackView {
+    static let visibleWidth: CGFloat = 180
+
+    var isCollapsed: Bool = true {
+        didSet {
+            guard isCollapsed != oldValue else { return }
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        // Keep the stack view's natural height so vertical centering in the
+        // 30pt Touch Bar strip is unchanged. Only the width collapses.
+        var size = super.intrinsicContentSize
+        size.width = isCollapsed ? 0 : Self.visibleWidth
+        return size
     }
 }

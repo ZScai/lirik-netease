@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main, netease]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: build-pock-${{ github.ref }}
