@@ -32,6 +32,12 @@ final class NowPlayingWatcher {
     /// are the single source of truth for sync position.
     var onElapsedTimeUpdate: ((TimeInterval) -> Void)?
 
+    /// Called when a session appears or disappears, or play/pause flips.
+    /// Not called for elapsed-time ticks on an unchanged play state.
+    /// Pause and "nothing playing" are distinct from track identity: lyrics
+    /// loading stays on `onTrackChange`, while the widget uses this to hide.
+    var onPlaybackStateChange: ((NowPlayingTrack?) -> Void)?
+
     /// Called when macOS Automation permission is denied for a media app.
     var onPermissionDenied: ((String) -> Void)?
 
@@ -271,6 +277,8 @@ final class NowPlayingWatcher {
     /// Processes an update from either backend. Detects track changes
     /// vs. mere elapsed-time updates and fires the appropriate callbacks.
     private func handleUpdate(_ newTrack: NowPlayingTrack?) {
+        let wasPlaying = currentTrack?.isPlaying == true
+
         // Track change detection
         let isNewTrack: Bool
         // NetEase / media-control often delivers title first, then duration in a
@@ -294,7 +302,8 @@ final class NowPlayingWatcher {
                 && newDur > 0
         }
 
-        if isNewTrack || durationBecameKnown {
+        let identityChanged = isNewTrack || durationBecameKnown
+        if identityChanged {
             currentTrack = newTrack
             onTrackChange?(newTrack)
         } else {
@@ -305,6 +314,13 @@ final class NowPlayingWatcher {
         // Always fire elapsed-time updates so the sync engine stays current
         if let elapsed = newTrack?.elapsedTime {
             onElapsedTimeUpdate?(elapsed)
+        }
+
+        // Play/pause with no elapsed sample (and session appear/disappear)
+        // still has to reach the widget, or a pause never collapses the strip.
+        let isPlayingNow = newTrack?.isPlaying == true
+        if identityChanged || wasPlaying != isPlayingNow {
+            onPlaybackStateChange?(newTrack)
         }
     }
 }
